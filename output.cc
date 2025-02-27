@@ -51,8 +51,11 @@ json::object *new_event(const TraceEvent &event, int pid, int tid, TimeStamp ts,
   json_event->set("tid", new json::integer_number(tid));
   json::object *args = new json::object();
   args->set("UID", new json::integer_number(this_uid));
-  if (event.args) {
-    for (auto &[key, value] : *event.args) {
+  if (event.args.first) {
+    const auto &evt_args = event.args.second;
+    for (const auto &item : evt_args) {
+      const auto &key = item.first;
+      const auto &value = item.second;
       args->set(key.data(), new json::string(value.data()));
     }
   }
@@ -91,7 +94,10 @@ void add_event(const TraceEvent &event) {
 
 void write_all_events() {
   add_event(
-      TraceEvent{"TU", EventCategory::TU, {0, ns_from_start()}, std::nullopt});
+      TraceEvent{"TU",
+                 EventCategory::TU,
+                 {0, ns_from_start()},
+                 std::make_pair(false, map_t<std::string, std::string>())});
   write_preprocessing_events();
   write_opt_pass_events();
   write_all_functions();

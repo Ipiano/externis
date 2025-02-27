@@ -15,13 +15,13 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
+#include <cstddef>
 #include <gcc-plugin.h>
 
 #include <chrono>
 #include <cpplib.h>
 #include <cstdio>
 #include <json.h>
-#include <optional>
 #include <pretty-print.h>
 #include <string>
 #include <unordered_map>
@@ -70,7 +70,7 @@ struct TraceEvent {
   const char *name;
   EventCategory category;
   TimeSpan ts;
-  std::optional<map_t<std::string, std::string>> args;
+  std::pair<bool, map_t<std::string, std::string>> args;
 };
 
 void start_preprocess_file(const char *file_name, cpp_reader *pfile);

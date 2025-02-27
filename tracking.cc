@@ -50,16 +50,21 @@ map_t<std::string, std::string> normalized_files_map;
 set_t<std::string> normalized_files;
 set_t<std::string> conflicted_files;
 
+bool starts_with(const std::string &check, const std::string &match) {
+  return check.size() >= match.size() &&
+         std::equal(match.begin(), match.end(), check.begin());
+}
+
 void register_include_location(const char *file_name, const char *dir_name) {
-  if (!file_to_include_directory.contains(file_name)) {
+  if (!file_to_include_directory.count(file_name)) {
     std::string file_std = file_name;
     file_to_include_directory[file_name] = dir_name;
     auto &folder_std = file_to_include_directory[file_std];
-    if (file_std.starts_with(folder_std)) {
+    if (starts_with(file_std, folder_std)) {
       // +1 for path separator.
       auto normalized_file = file_std.substr(folder_std.size() + 1);
       normalized_files_map[file_std] = normalized_file;
-      if (normalized_files.contains(normalized_file)) {
+      if (normalized_files.count(normalized_file)) {
         conflicted_files.insert(normalized_file);
       } else {
         normalized_files.insert(normalized_file);
@@ -72,8 +77,8 @@ void register_include_location(const char *file_name, const char *dir_name) {
 }
 
 const char *normalized_file_name(const char *file_name) {
-  if (normalized_files_map.contains(file_name) and
-      !conflicted_files.contains(normalized_files_map[file_name])) {
+  if (normalized_files_map.count(file_name) and
+      !conflicted_files.count(normalized_files_map[file_name])) {
     return normalized_files_map[file_name].data();
   } else {
     return file_name;
@@ -98,6 +103,10 @@ struct ScopeEvent {
   std::string name;
   EventCategory type;
   TimeSpan ts;
+
+  ScopeEvent() {}
+  ScopeEvent(const std::string &_name, EventCategory _type, TimeSpan _ts)
+      : name(_name), type(_type), ts(_ts) {}
 };
 std::vector<ScopeEvent> scope_events;
 
@@ -105,6 +114,10 @@ struct FunctionEvent {
   std::string name;
   const char *file_name;
   TimeSpan ts;
+
+  FunctionEvent() {}
+  FunctionEvent(const std::string &_name, const char *_file_name, TimeSpan _ts)
+      : name(_name), file_name(_file_name), ts(_ts) {}
 };
 
 std::vector<FunctionEvent> function_events;
@@ -123,8 +136,7 @@ void start_preprocess_file(const char *file_name, cpp_reader *pfile) {
   if (!file_name || !strcmp(file_name, "<command-line>")) {
     return;
   }
-  if (preprocess_start.contains(file_name) &&
-      !preprocess_end.contains(file_name)) {
+  if (preprocess_start.count(file_name) && !preprocess_end.count(file_name)) {
     // This is an edge case - this means that file_name is somewhere down the
     // stack and we have a circular include. Big fun!
     // Because we don't want to add the inner include, we replace file_name
@@ -133,7 +145,7 @@ void start_preprocess_file(const char *file_name, cpp_reader *pfile) {
     pfile = nullptr;
   }
 
-  if (!preprocess_start.contains(file_name)) {
+  if (!preprocess_start.count(file_name)) {
     preprocess_start[file_name] = now;
   }
 
@@ -164,7 +176,7 @@ void start_preprocess_file(const char *file_name, cpp_reader *pfile) {
 
 void end_preprocess_file() {
   auto now = ns_from_start();
-  if (!preprocess_end.contains(preprocessing_stack.top())) {
+  if (!preprocess_end.count(preprocessing_stack.top())) {
     preprocess_end[preprocessing_stack.top()] = now;
   }
   preprocessing_stack.pop();
@@ -173,15 +185,18 @@ void end_preprocess_file() {
 
 void write_preprocessing_events() {
   finish_preprocessing_stage(); // Should've already happened, but in any case.
-  for (const auto &[file, start] : preprocess_start) {
+  for (const auto &preprocess_item : preprocess_start) {
+    const auto &file = preprocess_item.first;
+    const auto &start = preprocess_item.second;
     if (file == CIRCULAR_POISON_VALUE) {
       continue;
     }
     int64_t end = preprocess_end.at(file);
-    add_event(TraceEvent{normalized_file_name(file.data()),
-                         EventCategory::PREPROCESS,
-                         {start, end},
-                         std::nullopt});
+    add_event(
+        TraceEvent{normalized_file_name(file.data()),
+                   EventCategory::PREPROCESS,
+                   {start, end},
+                   std::make_pair(false, map_t<std::string, std::string>())});
   }
 }
 
@@ -200,7 +215,7 @@ void write_opt_pass_events() {
     map_t<std::string, std::string> args;
     args["static_pass_number"] = std::to_string(event.pass->static_pass_number);
     add_event(TraceEvent{event.pass->name, pass_type(event.pass->type),
-                         event.ts, std::move(args)});
+                         event.ts, std::make_pair(true, std::move(args))});
   }
 }
 
@@ -230,17 +245,25 @@ void end_parse_function(FinishedFunction info) {
 }
 
 void write_all_scopes() {
-  for (const auto &[name, type, ts] : scope_events) {
-    add_event(TraceEvent{name.data(), type, ts, std::nullopt});
+  for (const auto &item : scope_events) {
+    const auto &name = item.name;
+    const auto &type = item.type;
+    const auto &ts = item.ts;
+    add_event(
+        TraceEvent{name.data(), type, ts,
+                   std::make_pair(false, map_t<std::string, std::string>())});
   }
 }
 
 void write_all_functions() {
-  for (const auto &[name, file_name, ts] : function_events) {
+  for (const auto &item : function_events) {
+    const auto &name = item.name;
+    const auto &file_name = item.file_name;
+    const auto &ts = item.ts;
     map_t<std::string, std::string> args;
     args["file"] = normalized_file_name(file_name);
-    add_event(
-        TraceEvent{name.data(), EventCategory::FUNCTION, ts, std::move(args)});
+    add_event(TraceEvent{name.data(), EventCategory::FUNCTION, ts,
+                         std::make_pair(true, std::move(args))});
   }
 }
 } // namespace externis
