@@ -17,14 +17,18 @@
 
 #include "externis.h"
 
+#include "c-family/c-pragma.h"
+#include "cpplib.h"
+#include <cassert>
 #include <cp/cp-tree.h>
+#include <cstdlib>
+#include <filesystem>
+#include <iostream>
 #include <options.h>
+#include <string_view>
 #include <tree-check.h>
 #include <tree-pass.h>
 #include <tree.h>
-
-#include "c-family/c-pragma.h"
-#include "cpplib.h"
 
 int plugin_is_GPL_compatible = 1;
 
@@ -101,40 +105,71 @@ void cb_finish_decl(void *gcc_data, void *user_data) {
 static const char *PLUGIN_NAME = "externis";
 
 bool setup_output(int argc, plugin_argument *argv) {
-  const char *flag_name = "trace";
-  const char *dir_flag_name = "trace-dir";
+  const std::string_view file_flag_name = "trace";
+  const std::string_view dir_flag_name = "trace-dir";
+
+  const static std::filesystem::path default_filename = "trace_XXXXXX.json";
+
+  std::optional<std::filesystem::path> target_file;
+  std::optional<std::filesystem::path> target_dir;
+
   // TODO: Maybe make the default filename related to the source filename.
   // TODO: Validate we only compile one TU at a time.
-  FILE *trace_file = nullptr;
-  if (argc == 0) {
-    char file_template[] = "/tmp/trace_XXXXXX.json";
-    int fd = mkstemps(file_template, 5);
-    if (fd == -1) {
-      perror("Externis mkstemps error: ");
+
+  for (int i = 0; i < argc; ++i) {
+    std::string_view arg_key = argv[i].key;
+
+    if (arg_key == file_flag_name) {
+      target_file = argv[i].value;
+    } else if (arg_key == dir_flag_name) {
+      target_dir = argv[i].value;
+    } else {
+      std::cerr << "Externis Error! Unknown argument '" << arg_key
+                << "' - known arguments are [" << file_flag_name << ", "
+                << dir_flag_name << "]\n";
       return false;
     }
-    trace_file = fdopen(fd, "w");
-  } else if (argc == 1 && !strcmp(argv[0].key, flag_name)) {
-    trace_file = fopen(argv[0].value, "w");
-    if (!trace_file) {
-      fprintf(stderr, "Externis Error! Couldn't open %s for writing\n",
-              argv[0].value);
-    }
-  } else if (argc == 1 && !strcmp(argv[0].key, dir_flag_name)) {
-    std::string file_template{argv[0].value};
-    file_template += "/trace_XXXXXX.json";
-    int fd = mkstemps(file_template.data(), 5);
+  }
+
+  if (target_dir && !target_dir->is_absolute()) {
+    std::cerr << "Externis Error! " << dir_flag_name
+              << " must be absolute; to output relative to the input "
+                 "source, use "
+              << file_flag_name << "\n";
+  }
+
+  if (target_file && target_dir) {
+    std::cerr << "Externis Error! " << dir_flag_name
+              << " may not be specified if" << file_flag_name
+              << " is absolute\n";
+    return false;
+  }
+
+  if (target_dir) {
+    target_file = *target_dir / default_filename;
+  }
+
+  assert(target_file);
+
+  FILE *trace_file = nullptr;
+
+  std::string filename = *target_file;
+
+  const auto replace_idx = filename.rfind("XXXXXX");
+  if (replace_idx != std::string::npos) {
+    int fd = mkstemps(filename.data(), filename.size() - (replace_idx + 6));
+
     if (fd == -1) {
-      perror("Externis mkstemps error: ");
+      std::cerr << "Externis Error! Failed to determine temp directory from "
+                << filename << "\n";
+      perror("\tmkstemps error: ");
       return false;
     }
     trace_file = fdopen(fd, "w");
   } else {
-    fprintf(stderr,
-            "Externis Error! Arguments must be -fplugin-arg-%s-%s=FILENAME or -fplugin-arg-%s-%s=DIRECTORY\n",
-            PLUGIN_NAME, flag_name, PLUGIN_NAME, dir_flag_name);
-    return false;
+    trace_file = fopen(target_file->c_str(), "w");
   }
+
   if (trace_file) {
     externis::set_output_file(trace_file);
     return true;
